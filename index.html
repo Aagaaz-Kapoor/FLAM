@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Bézier Curve with Physics</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            background: #ffffff;
+        }
+        
+        #header {
+            background: #1f2937;
+            color: white;
+            padding: 20px;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        
+        .formula {
+            font-size: 12px;
+            color: #d1d5db;
+            margin: 5px 0;
+        }
+        
+        #canvas {
+            display: block;
+            cursor: crosshair;
+            background: white;
+        }
+        
+        #info {
+            position: absolute;
+            top: 150px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>Interactive Bézier Curve with Physics</h1>
+        <div class="formula">Cubic Bézier: B(t) = (1−t)³P₀ + 3(1−t)²tP₁ + 3(1−t)t²P₂ + t³P₃</div>
+        <div class="formula">Tangent: B'(t) = 3(1−t)²(P₁−P₀) + 6(1−t)t(P₂−P₁) + 3t²(P₃−P₂)</div>
+        <div class="formula">Spring Physics: a = -k(x - target) - damping × v</div>
+    </div>
+    
+    <canvas id="canvas"></canvas>
+
+    <script>
+        // Canvas setup
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Set canvas size
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = window.innerWidth * dpr;
+            canvas.height = (window.innerHeight - 140) * dpr;
+            canvas.style.width = window.innerWidth + 'px';
+            canvas.style.height = (window.innerHeight - 140) + 'px';
+            ctx.scale(dpr, dpr);
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // Get display dimensions
+        const getWidth = () => window.innerWidth;
+        const getHeight = () => window.innerHeight - 140;
+
+        // Control points
+        const controlPoints = {
+            p0: { x: 0, y: 0 },  // Fixed start
+            p1: { x: 0, y: 0 },  // Dynamic
+            p2: { x: 0, y: 0 },  // Dynamic
+            p3: { x: 0, y: 0 }   // Fixed end
+        };
+
+        // Initialize control points
+        function initControlPoints() {
+            const w = getWidth();
+            const h = getHeight();
+            controlPoints.p0 = { x: w * 0.2, y: h * 0.5 };
+            controlPoints.p1 = { x: w * 0.4, y: h * 0.3 };
+            controlPoints.p2 = { x: w * 0.6, y: h * 0.7 };
+            controlPoints.p3 = { x: w * 0.8, y: h * 0.5 };
+        }
+        initControlPoints();
+
+        // Physics state for P1 and P2
+        const physics = {
+            p1: { 
+                x: controlPoints.p1.x, 
+                y: controlPoints.p1.y, 
+                vx: 0, 
+                vy: 0, 
+                tx: controlPoints.p1.x, 
+                ty: controlPoints.p1.y 
+            },
+            p2: { 
+                x: controlPoints.p2.x, 
+                y: controlPoints.p2.y, 
+                vx: 0, 
+                vy: 0, 
+                tx: controlPoints.p2.x, 
+                ty: controlPoints.p2.y 
+            }
+        };
+
+        // Mouse position
+        const mouse = { x: getWidth() / 2, y: getHeight() / 2 };
+
+        // Cubic Bézier curve calculation
+        // B(t) = (1-t)³P₀ + 3(1-t)²tP₁ + 3(1-t)t²P₂ + t³P₃
+        function bezierPoint(t, p0, p1, p2, p3) {
+            const mt = 1 - t;
+            const mt2 = mt * mt;
+            const mt3 = mt2 * mt;
+            const t2 = t * t;
+            const t3 = t2 * t;
+            
+            return {
+                x: mt3 * p0.x + 3 * mt2 * t * p1.x + 3 * mt * t2 * p2.x + t3 * p3.x,
+                y: mt3 * p0.y + 3 * mt2 * t * p1.y + 3 * mt * t2 * p2.y + t3 * p3.y
+            };
+        }
+
+        // Tangent vector calculation
+        // B'(t) = 3(1-t)²(P₁-P₀) + 6(1-t)t(P₂-P₁) + 3t²(P₃-P₂)
+        function bezierTangent(t, p0, p1, p2, p3) {
+            const mt = 1 - t;
+            const mt2 = mt * mt;
+            const t2 = t * t;
+            
+            const dx = 3 * mt2 * (p1.x - p0.x) + 
+                       6 * mt * t * (p2.x - p1.x) + 
+                       3 * t2 * (p3.x - p2.x);
+            const dy = 3 * mt2 * (p1.y - p0.y) + 
+                       6 * mt * t * (p2.y - p1.y) + 
+                       3 * t2 * (p3.y - p2.y);
+            
+            // Normalize
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len === 0) return { x: 0, y: 0 };
+            return { x: dx / len, y: dy / len };
+        }
+
+        // Spring-damper physics
+        // acceleration = -k * (position - target) - damping * velocity
+        function updatePhysics(state, dt) {
+            const k = 8.0;        // Spring constant
+            const damping = 4.0;  // Damping coefficient
+            
+            // Calculate spring forces
+            const ax = -k * (state.x - state.tx) - damping * state.vx;
+            const ay = -k * (state.y - state.ty) - damping * state.vy;
+            
+            // Update velocity
+            state.vx += ax * dt;
+            state.vy += ay * dt;
+            
+            // Update position
+            state.x += state.vx * dt;
+            state.y += state.vy * dt;
+        }
+
+        // Mouse movement handler
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+            
+            const w = getWidth();
+            const h = getHeight();
+            
+            // Update targets based on mouse position
+            const dx = mouse.x - w / 2;
+            const dy = mouse.y - h / 2;
+            
+            physics.p1.tx = controlPoints.p1.x + dx * 0.3;
+            physics.p1.ty = controlPoints.p1.y + dy * 0.3;
+            
+            physics.p2.tx = controlPoints.p2.x - dx * 0.3;
+            physics.p2.ty = controlPoints.p2.y - dy * 0.3;
+        });
+
+        // Draw a control point
+        function drawPoint(ctx, p, color, label) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            ctx.fillStyle = '#000';
+            ctx.font = '12px monospace';
+            ctx.fillText(label, p.x + 10, p.y - 10);
+        }
+
+        // Animation loop
+        let lastTime = performance.now();
+        
+        function animate(currentTime) {
+            const dt = Math.min((currentTime - lastTime) / 1000, 0.016); // Cap at 60 FPS
+            lastTime = currentTime;
+
+            const w = getWidth();
+            const h = getHeight();
+
+            // Update physics
+            updatePhysics(physics.p1, dt);
+            updatePhysics(physics.p2, dt);
+
+            // Get current dynamic points
+            const p1 = { x: physics.p1.x, y: physics.p1.y };
+            const p2 = { x: physics.p2.x, y: physics.p2.y };
+
+            // Clear canvas
+            ctx.clearRect(0, 0, w, h);
+
+            // Draw background grid
+            ctx.strokeStyle = '#f0f0f0';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < w; i += 50) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, h);
+                ctx.stroke();
+            }
+            for (let i = 0; i < h; i += 50) {
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(w, i);
+                ctx.stroke();
+            }
+
+            // Draw control point connections (dashed lines)
+            ctx.strokeStyle = '#ccc';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(controlPoints.p0.x, controlPoints.p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.lineTo(controlPoints.p3.x, controlPoints.p3.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Draw Bézier curve
+            ctx.strokeStyle = '#3b82f6';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            
+            const steps = 100;
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                const pt = bezierPoint(t, controlPoints.p0, p1, p2, controlPoints.p3);
+                
+                if (i === 0) {
+                    ctx.moveTo(pt.x, pt.y);
+                } else {
+                    ctx.lineTo(pt.x, pt.y);
+                }
+            }
+            ctx.stroke();
+
+            // Draw tangent vectors at intervals
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 2;
+            const tangentLength = 30;
+            
+            for (let i = 0; i <= 10; i++) {
+                const t = i / 10;
+                const pt = bezierPoint(t, controlPoints.p0, p1, p2, controlPoints.p3);
+                const tangent = bezierTangent(t, controlPoints.p0, p1, p2, controlPoints.p3);
+                
+                ctx.beginPath();
+                ctx.moveTo(
+                    pt.x - tangent.x * tangentLength / 2, 
+                    pt.y - tangent.y * tangentLength / 2
+                );
+                ctx.lineTo(
+                    pt.x + tangent.x * tangentLength / 2, 
+                    pt.y + tangent.y * tangentLength / 2
+                );
+                ctx.stroke();
+                
+                // Draw tangent endpoint
+                ctx.fillStyle = '#ef4444';
+                ctx.beginPath();
+                ctx.arc(
+                    pt.x + tangent.x * tangentLength / 2, 
+                    pt.y + tangent.y * tangentLength / 2, 
+                    3, 0, Math.PI * 2
+                );
+                ctx.fill();
+            }
+
+            // Draw control points
+            drawPoint(ctx, controlPoints.p0, '#10b981', 'P₀');
+            drawPoint(ctx, p1, '#f59e0b', 'P₁');
+            drawPoint(ctx, p2, '#f59e0b', 'P₂');
+            drawPoint(ctx, controlPoints.p3, '#10b981', 'P₃');
+
+            // Draw info text
+            ctx.fillStyle = '#000';
+            ctx.font = '14px monospace';
+            ctx.fillText('Move mouse to control the curve', 10, 20);
+            ctx.fillText(`P₁: (${Math.round(p1.x)}, ${Math.round(p1.y)})`, 10, 40);
+            ctx.fillText(`P₂: (${Math.round(p2.x)}, ${Math.round(p2.y)})`, 10, 60);
+            ctx.fillText(`FPS: ${Math.round(1 / dt)}`, 10, 80);
+
+            requestAnimationFrame(animate);
+        }
+
+        // Start animation
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
